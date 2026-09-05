@@ -216,8 +216,8 @@ func TestReconcile(t *testing.T) {
 
 	watch := newTestWatchlist(t)
 	now := time.Now()
-	watch.add(Entry{Hash: "inqbit", Tags: []string{"du", "fl"}, Added: now})   // present -> tag + drop
-	watch.add(Entry{Hash: "pending", Tags: []string{"du"}, Added: now})        // absent, fresh -> keep
+	watch.add(Entry{Hash: "inqbit", Tags: []string{"du", "fl"}, Added: now})               // present -> tag + drop
+	watch.add(Entry{Hash: "pending", Tags: []string{"du"}, Added: now})                    // absent, fresh -> keep
 	watch.add(Entry{Hash: "stale", Tags: []string{"fl"}, Added: now.Add(-72 * time.Hour)}) // absent, old -> expire
 
 	q := newQbit(srv.URL, "admin", "pw")

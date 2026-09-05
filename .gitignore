@@ -1,3 +1,4 @@
-/tagbrr
 *.test
+/tagbrr
 coverage.out
+tagbrr

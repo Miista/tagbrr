@@ -26,6 +26,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// version is injected by goreleaser via -ldflags "-X main.version=...".
+var version = "dev"
+
 // logger is replaced in main() with a LOG_LEVEL-aware instance; the
 // default here keeps tests and early init working.
 var logger zerolog.Logger = newLogger("info")
@@ -377,7 +380,7 @@ func main() {
 		}
 	}()
 
-	logger.Info().Msgf("tagbrr listening on %s with %d rules (reconcile every %s, watch entries expire after %s)", listen, len(cfg.Rules), interval, ttl)
+	logger.Info().Msgf("tagbrr %s listening on %s with %d rules (reconcile every %s, watch entries expire after %s)", version, listen, len(cfg.Rules), interval, ttl)
 	logger.Fatal().Err(http.ListenAndServe(listen, nil)).Msg("http server stopped")
 }
 
