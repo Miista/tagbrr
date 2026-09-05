@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
 	"net/http/cookiejar"
@@ -22,8 +21,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
 )
+
+// logger is replaced in main() with a LOG_LEVEL-aware instance; the
+// default here keeps tests and early init working.
+var logger zerolog.Logger = newLogger("info")
 
 // Rule maps any of a set of flag patterns to one tag.
 type Rule struct {
@@ -90,16 +94,16 @@ func loadWatchlist(path string) (*Watchlist, error) {
 func (w *Watchlist) persist() {
 	b, err := json.MarshalIndent(w, "", "  ")
 	if err != nil {
-		log.Printf("watchlist marshal: %v", err)
+		logger.Error().Err(err).Msg("could not marshal the watch list")
 		return
 	}
 	tmp := w.path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		log.Printf("watchlist write: %v", err)
+		logger.Error().Err(err).Msg("could not write the watch list file")
 		return
 	}
 	if err := os.Rename(tmp, w.path); err != nil {
-		log.Printf("watchlist rename: %v", err)
+		logger.Error().Err(err).Msg("could not move the watch list file into place")
 	}
 }
 
@@ -249,11 +253,11 @@ func reconcile(q *qbit, w *Watchlist, ttl time.Duration) {
 	if err != nil {
 		// One relogin attempt per pass; qBit sessions expire.
 		if lerr := q.login(); lerr != nil {
-			log.Printf("reconcile: %v; relogin: %v", err, lerr)
+			logger.Warn().Msgf("reconcile pass failed (%v) and relogin also failed (%v); will retry next pass", err, lerr)
 			return
 		}
 		if found, err = q.present(hashes); err != nil {
-			log.Printf("reconcile: %v", err)
+			logger.Warn().Msgf("reconcile pass failed after relogin (%v); will retry next pass", err)
 			return
 		}
 	}
@@ -262,13 +266,13 @@ func reconcile(q *qbit, w *Watchlist, ttl time.Duration) {
 		switch {
 		case found[e.Hash]:
 			if err := q.addTags(e.Hash, e.Tags); err != nil {
-				log.Printf("tag %s (%s): %v", e.Hash, e.Title, err)
+				logger.Warn().Msgf("could not tag %s (%s): %v; will retry next pass", e.Hash, e.Title, err)
 				continue // retry next pass
 			}
-			log.Printf("tagged %s %v (%s)", e.Hash, e.Tags, e.Title)
+			logger.Info().Msgf("tagged %s with %v (%s)", e.Hash, e.Tags, e.Title)
 			done = append(done, e.Hash)
 		case time.Since(e.Added) > ttl:
-			log.Printf("expired %s after %s, never appeared (%s)", e.Hash, ttl, e.Title)
+			logger.Info().Msgf("gave up on %s after %s; it never appeared in qBittorrent (%s)", e.Hash, ttl, e.Title)
 			done = append(done, e.Hash)
 		}
 	}
@@ -289,7 +293,7 @@ func envDuration(key string, def time.Duration) time.Duration {
 	}
 	d, err := time.ParseDuration(v)
 	if err != nil {
-		log.Fatalf("%s: %v", key, err)
+		logger.Fatal().Msgf("invalid duration in %s: %v", key, err)
 	}
 	return d
 }
@@ -317,6 +321,7 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
 		os.Exit(healthcheck(envOr("TAGBRR_LISTEN", ":9171")))
 	}
+	logger = newLogger(envOr("LOG_LEVEL", "info"))
 	var (
 		qbtURL     = os.Getenv("TAGBRR_QBIT_URL")
 		qbtUser    = envOr("TAGBRR_QBIT_USER", "admin")
@@ -328,27 +333,27 @@ func main() {
 		dataPath   = envOr("TAGBRR_DATA", "/data/watchlist.json")
 	)
 	if qbtURL == "" || qbtPass == "" {
-		log.Fatal("TAGBRR_QBIT_URL and TAGBRR_QBIT_PASS are required")
+		logger.Fatal().Msg("TAGBRR_QBIT_URL and TAGBRR_QBIT_PASS are required")
 	}
 
 	cfgBytes, err := os.ReadFile(configPath)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		logger.Fatal().Msgf("could not read the config file: %v", err)
 	}
 	cfg, err := parseConfig(cfgBytes)
 	if err != nil {
-		log.Fatalf("config: %v", err)
+		logger.Fatal().Msgf("could not parse the config file: %v", err)
 	}
 	if len(cfg.Rules) == 0 {
-		log.Fatal("config: no rules defined")
+		logger.Fatal().Msg("the config file defines no rules")
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dataPath), 0o755); err != nil {
-		log.Fatalf("data dir: %v", err)
+		logger.Fatal().Msgf("could not create the data directory: %v", err)
 	}
 	watch, err := loadWatchlist(dataPath)
 	if err != nil {
-		log.Fatalf("watchlist: %v", err)
+		logger.Fatal().Msgf("could not load the watch list: %v", err)
 	}
 
 	q := newQbit(qbtURL, qbtUser, qbtPass)
@@ -371,8 +376,8 @@ func main() {
 		}
 	}()
 
-	log.Printf("tagbrr listening on %s (%d rules, interval %s, ttl %s)", listen, len(cfg.Rules), interval, ttl)
-	log.Fatal(http.ListenAndServe(listen, nil))
+	logger.Info().Msgf("tagbrr listening on %s with %d rules (reconcile every %s, watch entries expire after %s)", listen, len(cfg.Rules), interval, ttl)
+	logger.Fatal().Err(http.ListenAndServe(listen, nil)).Msg("http server stopped")
 }
 
 func webhookHandler(cfg Config, watch *Watchlist, poke chan struct{}) http.HandlerFunc {
@@ -400,7 +405,7 @@ func webhookHandler(cfg Config, watch *Watchlist, poke chan struct{}) http.Handl
 			Title: ev.Release.ReleaseTitle,
 			Added: time.Now(),
 		})
-		log.Printf("watching %s %v (%s)", strings.ToLower(ev.DownloadID), tags, ev.Release.ReleaseTitle)
+		logger.Info().Msgf("watching %s for tags %v (%s)", strings.ToLower(ev.DownloadID), tags, ev.Release.ReleaseTitle)
 		select {
 		case poke <- struct{}{}:
 		default:
