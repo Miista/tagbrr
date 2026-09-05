@@ -1,0 +1,11 @@
+# Used by goreleaser: the binary is prebuilt and copied in.
+FROM alpine:3 AS certs
+RUN apk add --no-cache ca-certificates
+
+FROM scratch
+COPY --from=certs /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY tagbrr /tagbrr
+USER 65534:65534
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD ["/tagbrr", "-healthcheck"]
+ENTRYPOINT ["/tagbrr"]

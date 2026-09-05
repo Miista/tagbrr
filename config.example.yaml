@@ -1,0 +1,8 @@
+# tagbrr rules: "flagA,flagB,..." -> tag
+# Each key is a comma-separated list of flag patterns, matched
+# case-insensitively as substrings of the grab's indexerFlags entries
+# (so "doubleupload" also catches "G_DoubleUpload"). Any pattern
+# matching applies the tag.
+rules:
+  doubleupload: du
+  freeleech,halfleech: fl
