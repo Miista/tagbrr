@@ -20,6 +20,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	_ "time/tzdata" // embed tzdata so TZ works in the scratch image
 
 	"github.com/rs/zerolog"
 	"gopkg.in/yaml.v3"
