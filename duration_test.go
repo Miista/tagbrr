@@ -5,39 +5,24 @@ import (
 	"time"
 )
 
-func TestParseDuration(t *testing.T) {
+// envDuration is where durations enter tagbrr; this pins the str2duration
+// behavior we rely on (d/w suffixes, Go forms, errors are fatal so only the
+// happy paths are testable here).
+func TestEnvDuration(t *testing.T) {
 	cases := []struct {
-		in      string
-		want    time.Duration
-		wantErr bool
+		in   string
+		want time.Duration
 	}{
-		{in: "7d", want: 7 * 24 * time.Hour},
-		{in: "1d", want: 24 * time.Hour},
-		{in: "2w", want: 2 * 7 * 24 * time.Hour},
-		{in: "0.5d", want: 12 * time.Hour},
-		{in: "168h", want: 168 * time.Hour},
-		{in: "45m", want: 45 * time.Minute},
-		{in: "1h30m", want: 90 * time.Minute},
-		{in: "30d", want: 30 * 24 * time.Hour},
-		{in: "xd", wantErr: true},
-		{in: "w", wantErr: true},
-		{in: "1mo", wantErr: true}, // months deliberately unsupported
-		{in: "", wantErr: true},
+		{"7d", 7 * 24 * time.Hour},
+		{"2w", 2 * 7 * 24 * time.Hour},
+		{"1d12h", 36 * time.Hour},
+		{"45m", 45 * time.Minute},
+		{"", time.Minute}, // unset -> default
 	}
 	for _, c := range cases {
-		got, err := parseDuration(c.in)
-		if c.wantErr {
-			if err == nil {
-				t.Errorf("parseDuration(%q) accepted, want error", c.in)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("parseDuration(%q): %v", c.in, err)
-			continue
-		}
-		if got != c.want {
-			t.Errorf("parseDuration(%q) = %s, want %s", c.in, got, c.want)
+		t.Setenv("TAGBRR_TEST_DUR", c.in)
+		if got := envDuration("TAGBRR_TEST_DUR", time.Minute); got != c.want {
+			t.Errorf("envDuration(%q) = %s, want %s", c.in, got, c.want)
 		}
 	}
 }

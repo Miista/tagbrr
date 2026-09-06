@@ -25,6 +25,7 @@ import (
 	_ "time/tzdata" // embed tzdata so TZ works in the scratch image
 
 	"github.com/rs/zerolog"
+	str2duration "github.com/xhit/go-str2duration/v2"
 	"gopkg.in/yaml.v3"
 )
 
@@ -360,7 +361,7 @@ func envDuration(key string, def time.Duration) time.Duration {
 	if v == "" {
 		return def
 	}
-	d, err := parseDuration(v)
+	d, err := str2duration.ParseDuration(v)
 	if err != nil {
 		logger.Fatal().Msgf("invalid duration in %s: %v", key, err)
 	}
