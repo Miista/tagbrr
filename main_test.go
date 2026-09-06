@@ -310,14 +310,30 @@ func TestReconcileRelogin(t *testing.T) {
 	}
 }
 
-func TestQbitLoginFailure(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		rw.Write([]byte("Fails.")) // qBit returns 200 with "Fails." on bad credentials
-	}))
-	defer srv.Close()
-	q := newQbit(srv.URL, "admin", "wrong")
-	if err := q.login(); err == nil {
-		t.Error("login succeeded against Fails. response")
+func TestQbitLogin(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		wantOK bool
+	}{
+		{"4.x success", 200, "Ok.", true},
+		{"5.x success", 204, "", true},
+		{"4.x bad credentials", 200, "Fails.", false},
+		{"5.x bad credentials", 401, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
+				rw.WriteHeader(c.status)
+				rw.Write([]byte(c.body))
+			}))
+			defer srv.Close()
+			err := newQbit(srv.URL, "admin", "pw").login()
+			if (err == nil) != c.wantOK {
+				t.Errorf("login err = %v, want ok=%v", err, c.wantOK)
+			}
+		})
 	}
 }
 

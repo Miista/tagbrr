@@ -43,8 +43,9 @@ func main() {
 	}
 
 	// --- qBittorrent ---
+	// 204 + empty body, like qBittorrent 5.x (4.x answered 200 "Ok.").
 	http.HandleFunc("/api/v2/auth/login", func(rw http.ResponseWriter, r *http.Request) {
-		rw.Write([]byte("Ok."))
+		rw.WriteHeader(http.StatusNoContent)
 	})
 	http.HandleFunc("/api/v2/torrents/info", func(rw http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()

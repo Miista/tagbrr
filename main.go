@@ -18,6 +18,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"sort"
 
 	"strings"
 
@@ -118,6 +119,9 @@ func parseConfig(b []byte) (Config, error) {
 	if len(cfg.Rules) == 0 {
 		return Config{}, fmt.Errorf("the config file defines no rules")
 	}
+	// YAML maps have no order and Go randomizes iteration; sort so tag
+	// order (in logs and in qBittorrent) is stable across runs.
+	sort.Slice(cfg.Rules, func(i, j int) bool { return cfg.Rules[i].Tag < cfg.Rules[j].Tag })
 	return cfg, nil
 }
 
@@ -253,10 +257,16 @@ func (q *qbit) login() error {
 	}
 	defer resp.Body.Close()
 	b, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != 200 || !strings.Contains(string(b), "Ok") {
-		return fmt.Errorf("login failed: status %d, body %q", resp.StatusCode, string(b))
+	// qBittorrent 4.x answers a successful login with 200 and "Ok."; 5.x
+	// with 204 and an empty body. Bad credentials are 200+"Fails." on 4.x
+	// and 401 on 5.x.
+	switch {
+	case resp.StatusCode == http.StatusNoContent:
+		return nil
+	case resp.StatusCode == http.StatusOK && strings.Contains(string(b), "Ok"):
+		return nil
 	}
-	return nil
+	return fmt.Errorf("login failed: status %d, body %q", resp.StatusCode, string(b))
 }
 
 // tags returns, for each of the given hashes that exists in qBittorrent,
