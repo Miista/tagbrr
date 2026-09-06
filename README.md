@@ -45,9 +45,10 @@ tagbrr:
   environment:
     TAGBRR_QBIT_URL: http://qbittorrent:8080
     TAGBRR_QBIT_PASS: ${QBIT_PASS}
+    TZ: Europe/Copenhagen
   volumes:
-    - ./tagbrr/tagbrr.yaml:/config/tagbrr.yaml:ro
-    - ./tagbrr/data:/data
+    - ./tagbrr/tagbrr.yaml:/config/tagbrr.yaml:ro   # rules file (fixed path)
+    - ./tagbrr/data:/data                           # watch list state (fixed path)
   networks: [media]   # no published ports; arrs reach it on the compose network
 ```
 
