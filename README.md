@@ -33,14 +33,14 @@ The arrs to poll are declared entirely in the environment: a
 | `TAGBRR_QBIT_PASS` | — (required) | |
 | `TAGBRR_ARR_<NAME>_URL` | — (required, per arr) | e.g. `TAGBRR_ARR_RADARR_URL=http://radarr:7878` |
 | `TAGBRR_ARR_<NAME>_KEY` | — (required, per arr) | API key matching the `_URL` of the same name |
-| `TAGBRR_INTERVAL` | `2m` | poll + reconcile interval |
-| `TAGBRR_BACKFILL` | `48h` | how far back the first-ever poll looks; set it long to retroactively tag old grabs still in qBittorrent |
-| `TAGBRR_TTL` | `48h` | give up on a grabbed torrent that never appears in qBittorrent after this long; keep ≤ the add-to-removal lifetime of your torrents, longer buys nothing |
+| `TAGBRR_INTERVAL` | `15m` | poll interval; keep it well under your shortest seeding goal so tags land before policy would matter |
+| `TAGBRR_WINDOW` | `720h` | how far back each poll looks; grabs older than this are never (re)considered. Set it long once to retroactively tag old grabs still in qBittorrent |
 | `LOG_LEVEL` | `info` | zerolog level |
 | `TZ` | UTC | timezone for log timestamps |
 
-The config file lives at `/config/tagbrr.yaml` and state at
-`/data/state.json` inside the container (fixed paths — mount accordingly).
+The config file lives at `/config/tagbrr.yaml` inside the container (fixed
+path — mount accordingly). tagbrr is stateless: no volume, no database;
+every pass re-reads the window and tags only what is missing a tag.
 `:9171` serves `/healthz` only.
 
 ## Compose
@@ -60,7 +60,6 @@ tagbrr:
     TZ: Europe/Copenhagen
   volumes:
     - ./tagbrr/tagbrr.yaml:/config/tagbrr.yaml:ro   # config (fixed path)
-    - ./tagbrr/data:/data                           # state (fixed path)
   networks: [media]   # polls the arrs and qBittorrent over the compose network; nothing published
 ```
 
@@ -70,6 +69,7 @@ tagbrr:
   the tracker (check a manual search in the arr for visible flags).
 - The flag snapshot is grab-time only; promos ending later are invisible.
   Time-box downstream instead (qui rule on tag + added age).
-- Failed grabs never appear in qBit; the TTL garbage-collects them.
-- Polls overlap slightly and re-tagging is idempotent, so restarts and
-  downtime lose nothing — history is the durable record.
+- Failed grabs never appear in qBit; they simply age out of the window.
+- Statelessness means restarts and downtime lose nothing — history is the
+  durable record — and a tag removed by hand is restored on the next pass
+  while the grab is inside the window.

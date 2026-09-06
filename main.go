@@ -3,9 +3,10 @@
 // Sonarr/Radarr keep a release's indexer flags (freeleech, double upload,
 // ...) on the grab event in their history. tagbrr polls that history,
 // matches the flags against its rules, and tags the torrent in qBittorrent
-// once it appears there. Pending torrents that never appear expire after a
-// TTL. All seeding *policy* lives downstream (e.g. qui automations acting
-// on the tags). Nothing is configured in the arrs: tagbrr only reads.
+// once it appears there — stateless: every pass re-reads a sliding window
+// of history and tags only what is present and missing its tag. All seeding
+// *policy* lives downstream (e.g. qui automations acting on the tags).
+// Nothing is configured in the arrs: tagbrr only reads.
 package main
 
 import (
@@ -17,9 +18,9 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
-	"path/filepath"
+
 	"strings"
-	"sync"
+
 	"time"
 	_ "time/tzdata" // embed tzdata so TZ works in the scratch image
 
@@ -27,13 +28,11 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The container owns these paths and its internal port; they are not
-// configuration. Mount the rules file at configPath and a volume at the
-// data directory.
+// The container owns this path and its internal port; they are not
+// configuration. Mount the rules file at configPath.
 const (
 	listen     = ":9171" // health endpoint only
 	configPath = "/config/tagbrr.yaml"
-	dataPath   = "/data/state.json"
 )
 
 // version is injected by goreleaser via -ldflags "-X main.version=...".
@@ -59,7 +58,7 @@ type Arr struct {
 
 // arrsFromEnv discovers the arrs to poll from TAGBRR_ARR_<NAME>_URL
 // variables; each needs a matching _KEY. The name is kept lowercase for
-// logs and state.
+// logs.
 func arrsFromEnv(environ []string) ([]Arr, error) {
 	vars := map[string]string{}
 	for _, kv := range environ {
@@ -119,109 +118,6 @@ func parseConfig(b []byte) (Config, error) {
 		return Config{}, fmt.Errorf("the config file defines no rules")
 	}
 	return cfg, nil
-}
-
-// Entry is one grabbed torrent waiting to be tagged in qBittorrent.
-type Entry struct {
-	Hash  string    `json:"hash"`
-	Tags  []string  `json:"tags"`
-	Title string    `json:"title"`
-	Added time.Time `json:"added"`
-}
-
-// State is everything tagbrr remembers across restarts: torrents pending a
-// tag, and how far into each arr's history it has already looked.
-type State struct {
-	mu         sync.Mutex
-	path       string
-	Entries    map[string]Entry     `json:"entries"`
-	LastPolled map[string]time.Time `json:"lastPolled"`
-}
-
-func loadState(path string) (*State, error) {
-	s := &State{path: path, Entries: map[string]Entry{}, LastPolled: map[string]time.Time{}}
-	b, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return s, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	if err := json.Unmarshal(b, s); err != nil {
-		return nil, err
-	}
-	if s.Entries == nil {
-		s.Entries = map[string]Entry{}
-	}
-	if s.LastPolled == nil {
-		s.LastPolled = map[string]time.Time{}
-	}
-	return s, nil
-}
-
-// persist writes the state atomically (temp file + rename).
-// Callers must hold s.mu.
-func (s *State) persist() {
-	b, err := json.MarshalIndent(s, "", "  ")
-	if err != nil {
-		logger.Error().Err(err).Msg("could not marshal the state")
-		return
-	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		logger.Error().Err(err).Msg("could not write the state file")
-		return
-	}
-	if err := os.Rename(tmp, s.path); err != nil {
-		logger.Error().Err(err).Msg("could not move the state file into place")
-	}
-}
-
-func (s *State) add(e Entry) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if old, ok := s.Entries[e.Hash]; ok {
-		e.Tags = mergeTags(old.Tags, e.Tags)
-		e.Added = old.Added
-	}
-	s.Entries[e.Hash] = e
-	s.persist()
-}
-
-func (s *State) remove(hashes []string) {
-	if len(hashes) == 0 {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, h := range hashes {
-		delete(s.Entries, h)
-	}
-	s.persist()
-}
-
-func (s *State) snapshot() []Entry {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]Entry, 0, len(s.Entries))
-	for _, e := range s.Entries {
-		out = append(out, e)
-	}
-	return out
-}
-
-func (s *State) lastPolled(arr string) (time.Time, bool) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.LastPolled[arr]
-	return t, ok
-}
-
-func (s *State) setLastPolled(arr string, t time.Time) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.LastPolled[arr] = t
-	s.persist()
 }
 
 func mergeTags(a, b []string) []string {
@@ -299,22 +195,21 @@ func grabsSince(client *http.Client, arr Arr, since time.Time) ([]grabRecord, er
 	return records, nil
 }
 
-// pollOverlap is re-read on every poll so a record written just before the
-// previous poll's timestamp is never missed. Re-tagging is idempotent, so
-// the overlap costs nothing.
-const pollOverlap = 10 * time.Minute
+// candidate is one grabbed torrent whose flags matched a rule.
+type candidate struct {
+	Hash  string
+	Tags  []string
+	Title string
+}
 
-// poll reads each arr's grab history and queues matching torrents.
-func poll(client *http.Client, cfg Config, state *State, backfill time.Duration) {
+// poll reads each arr's grab history over the window and returns the
+// torrents whose flags match a rule, keyed by lowercase hash. An arr that
+// cannot be read is skipped for this pass; the window makes the next pass
+// cover for it.
+func poll(client *http.Client, cfg Config, window time.Duration) map[string]candidate {
+	out := map[string]candidate{}
 	for _, arr := range cfg.Arrs {
-		since, ok := state.lastPolled(arr.Name)
-		if !ok {
-			since = time.Now().Add(-backfill)
-		} else {
-			since = since.Add(-pollOverlap)
-		}
-		start := time.Now()
-		records, err := grabsSince(client, arr, since)
+		records, err := grabsSince(client, arr, time.Now().Add(-window))
 		if err != nil {
 			logger.Warn().Msgf("could not read %s's history (%v); will retry next pass", arr.Name, err)
 			continue
@@ -328,11 +223,13 @@ func poll(client *http.Client, cfg Config, state *State, backfill time.Duration)
 				continue
 			}
 			hash := strings.ToLower(r.DownloadID)
-			state.add(Entry{Hash: hash, Tags: tags, Title: r.SourceTitle, Added: time.Now()})
-			logger.Info().Msgf("queued %s from %s for tags %v (%s)", hash, arr.Name, tags, r.SourceTitle)
+			if prev, ok := out[hash]; ok {
+				tags = mergeTags(prev.Tags, tags)
+			}
+			out[hash] = candidate{Hash: hash, Tags: tags, Title: r.SourceTitle}
 		}
-		state.setLastPolled(arr.Name, start)
 	}
+	return out
 }
 
 type qbit struct {
@@ -361,8 +258,9 @@ func (q *qbit) login() error {
 	return nil
 }
 
-// present returns which of the given hashes exist in qBittorrent.
-func (q *qbit) present(hashes []string) (map[string]bool, error) {
+// tags returns, for each of the given hashes that exists in qBittorrent,
+// the tags it currently carries.
+func (q *qbit) tags(hashes []string) (map[string][]string, error) {
 	resp, err := q.client.Get(q.base + "/api/v2/torrents/info?hashes=" + url.QueryEscape(strings.Join(hashes, "|")))
 	if err != nil {
 		return nil, err
@@ -373,13 +271,20 @@ func (q *qbit) present(hashes []string) (map[string]bool, error) {
 	}
 	var torrents []struct {
 		Hash string `json:"hash"`
+		Tags string `json:"tags"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&torrents); err != nil {
 		return nil, err
 	}
-	found := map[string]bool{}
+	found := map[string][]string{}
 	for _, t := range torrents {
-		found[strings.ToLower(t.Hash)] = true
+		var tags []string
+		for _, tag := range strings.Split(t.Tags, ",") {
+			if tag = strings.TrimSpace(tag); tag != "" {
+				tags = append(tags, tag)
+			}
+		}
+		found[strings.ToLower(t.Hash)] = tags
 	}
 	return found, nil
 }
@@ -397,43 +302,50 @@ func (q *qbit) addTags(hash string, tags []string) error {
 	return nil
 }
 
-func reconcile(q *qbit, s *State, ttl time.Duration) {
-	entries := s.snapshot()
-	if len(entries) == 0 {
+func reconcile(q *qbit, want map[string]candidate) {
+	if len(want) == 0 {
 		return
 	}
 	var hashes []string
-	for _, e := range entries {
-		hashes = append(hashes, e.Hash)
+	for h := range want {
+		hashes = append(hashes, h)
 	}
-	found, err := q.present(hashes)
+	have, err := q.tags(hashes)
 	if err != nil {
 		// One relogin attempt per pass; qBit sessions expire.
 		if lerr := q.login(); lerr != nil {
 			logger.Warn().Msgf("reconcile pass failed (%v) and relogin also failed (%v); will retry next pass", err, lerr)
 			return
 		}
-		if found, err = q.present(hashes); err != nil {
+		if have, err = q.tags(hashes); err != nil {
 			logger.Warn().Msgf("reconcile pass failed after relogin (%v); will retry next pass", err)
 			return
 		}
 	}
-	var done []string
-	for _, e := range entries {
-		switch {
-		case found[e.Hash]:
-			if err := q.addTags(e.Hash, e.Tags); err != nil {
-				logger.Warn().Msgf("could not tag %s (%s): %v; will retry next pass", e.Hash, e.Title, err)
-				continue // retry next pass
-			}
-			logger.Info().Msgf("tagged %s with %v (%s)", e.Hash, e.Tags, e.Title)
-			done = append(done, e.Hash)
-		case time.Since(e.Added) > ttl:
-			logger.Info().Msgf("gave up on %s after %s; it never appeared in qBittorrent (%s)", e.Hash, ttl, e.Title)
-			done = append(done, e.Hash)
+	for h, c := range want {
+		existing, present := have[h]
+		if !present {
+			continue // not in qBittorrent (yet, or ever); the window retries
 		}
+		has := map[string]bool{}
+		for _, t := range existing {
+			has[t] = true
+		}
+		var missing []string
+		for _, t := range c.Tags {
+			if !has[t] {
+				missing = append(missing, t)
+			}
+		}
+		if len(missing) == 0 {
+			continue // converged
+		}
+		if err := q.addTags(h, missing); err != nil {
+			logger.Warn().Msgf("could not tag %s (%s): %v; will retry next pass", h, c.Title, err)
+			continue
+		}
+		logger.Info().Msgf("tagged %s with %v (%s)", h, missing, c.Title)
 	}
-	s.remove(done)
 }
 
 func envOr(key, def string) string {
@@ -483,9 +395,8 @@ func main() {
 		qbtURL   = os.Getenv("TAGBRR_QBIT_URL")
 		qbtUser  = envOr("TAGBRR_QBIT_USER", "admin")
 		qbtPass  = os.Getenv("TAGBRR_QBIT_PASS")
-		interval = envDuration("TAGBRR_INTERVAL", 2*time.Minute)
-		ttl      = envDuration("TAGBRR_TTL", 48*time.Hour)
-		backfill = envDuration("TAGBRR_BACKFILL", 48*time.Hour)
+		interval = envDuration("TAGBRR_INTERVAL", 15*time.Minute)
+		window   = envDuration("TAGBRR_WINDOW", 720*time.Hour)
 	)
 	if qbtURL == "" || qbtPass == "" {
 		logger.Fatal().Msg("TAGBRR_QBIT_URL and TAGBRR_QBIT_PASS are required")
@@ -503,14 +414,6 @@ func main() {
 		logger.Fatal().Msgf("%v", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dataPath), 0o755); err != nil {
-		logger.Fatal().Msgf("could not create the data directory: %v", err)
-	}
-	state, err := loadState(dataPath)
-	if err != nil {
-		logger.Fatal().Msgf("could not load the state: %v", err)
-	}
-
 	q := newQbit(qbtURL, qbtUser, qbtPass)
 	arrClient := &http.Client{Timeout: 30 * time.Second}
 
@@ -523,11 +426,10 @@ func main() {
 		for _, a := range cfg.Arrs {
 			names = append(names, a.Name)
 		}
-		logger.Info().Msgf("tagbrr %s polling %s every %s with %d rules (backfill %s, pending torrents expire after %s)",
-			version, strings.Join(names, ", "), interval, len(cfg.Rules), backfill, ttl)
+		logger.Info().Msgf("tagbrr %s polling %s every %s with %d rules over a %s window",
+			version, strings.Join(names, ", "), interval, len(cfg.Rules), window)
 		for {
-			poll(arrClient, cfg, state, backfill)
-			reconcile(q, state, ttl)
+			reconcile(q, poll(arrClient, cfg, window))
 			time.Sleep(interval)
 		}
 	}()

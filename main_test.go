@@ -5,7 +5,6 @@ import (
 
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -124,54 +123,6 @@ func TestMatchTags(t *testing.T) {
 	}
 }
 
-func newTestState(t *testing.T) *State {
-	t.Helper()
-	s, err := loadState(filepath.Join(t.TempDir(), "state.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	return s
-}
-
-func TestStatePersistence(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "state.json")
-	s, err := loadState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	s.add(Entry{Hash: "aaa", Tags: []string{"du"}, Added: time.Now()})
-	s.add(Entry{Hash: "aaa", Tags: []string{"fl"}, Added: time.Now()}) // re-grab merges tags
-	s.add(Entry{Hash: "bbb", Tags: []string{"fl"}, Added: time.Now()})
-	mark := time.Date(2026, 9, 6, 12, 0, 0, 0, time.UTC)
-	s.setLastPolled("radarr", mark)
-
-	s2, err := loadState(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(s2.Entries) != 2 {
-		t.Fatalf("got %d entries, want 2", len(s2.Entries))
-	}
-	if got := strings.Join(s2.Entries["aaa"].Tags, ","); got != "du,fl" {
-		t.Errorf("merged tags = %q, want du,fl", got)
-	}
-	if got, ok := s2.lastPolled("radarr"); !ok || !got.Equal(mark) {
-		t.Errorf("lastPolled = %v %v, want %v", got, ok, mark)
-	}
-	if _, ok := s2.lastPolled("sonarr"); ok {
-		t.Error("lastPolled for unpolled arr should be absent")
-	}
-
-	s2.remove([]string{"aaa"})
-	s3, _ := loadState(path)
-	if _, ok := s3.Entries["aaa"]; ok {
-		t.Error("aaa still present after remove")
-	}
-	if _, ok := s3.Entries["bbb"]; !ok {
-		t.Error("bbb lost by remove of aaa")
-	}
-}
-
 // fakeArr serves the one history endpoint poll uses.
 type fakeArr struct {
 	records []grabRecord
@@ -217,12 +168,11 @@ func TestPoll(t *testing.T) {
 	srv := arr.server()
 	defer srv.Close()
 
-	state := newTestState(t)
 	cfg := Config{
 		Arrs:  []Arr{{Name: "radarr", URL: srv.URL, Key: "sekrit"}},
 		Rules: testRules,
 	}
-	poll(srv.Client(), cfg, state, 48*time.Hour)
+	got := poll(srv.Client(), cfg, 48*time.Hour)
 
 	if arr.lastKey != "sekrit" {
 		t.Errorf("api key sent = %q", arr.lastKey)
@@ -230,41 +180,32 @@ func TestPoll(t *testing.T) {
 	if !strings.Contains(arr.lastQ, "eventType=grabbed") {
 		t.Errorf("query = %q, want eventType=grabbed", arr.lastQ)
 	}
-	entries := map[string]Entry{}
-	for _, e := range state.snapshot() {
-		entries[e.Hash] = e
+	if len(got) != 2 {
+		t.Fatalf("candidates = %v, want aaaa and cccc", got)
 	}
-	if len(entries) != 2 {
-		t.Fatalf("queued %v, want aaaa and cccc", entries)
+	if tags := strings.Join(got["aaaa"].Tags, ","); tags != "fl" {
+		t.Errorf("aaaa tags = %q", tags)
 	}
-	if got := strings.Join(entries["aaaa"].Tags, ","); got != "fl" {
-		t.Errorf("aaaa tags = %q", got)
-	}
-	if got := strings.Join(entries["cccc"].Tags, ","); got != "du,fl" {
-		t.Errorf("cccc tags = %q", got)
-	}
-	if _, ok := state.lastPolled("radarr"); !ok {
-		t.Error("lastPolled not recorded after a successful poll")
+	if tags := strings.Join(got["cccc"].Tags, ","); tags != "du,fl" {
+		t.Errorf("cccc tags = %q", tags)
 	}
 
-	// a failing arr must not advance lastPolled
+	// a failing arr yields no candidates rather than an error
 	arr.status = http.StatusInternalServerError
-	before, _ := state.lastPolled("radarr")
-	poll(srv.Client(), cfg, state, 48*time.Hour)
-	after, _ := state.lastPolled("radarr")
-	if !after.Equal(before) {
-		t.Error("lastPolled advanced past a failed poll")
+	if got := poll(srv.Client(), cfg, 48*time.Hour); len(got) != 0 {
+		t.Errorf("failing arr produced candidates: %v", got)
 	}
 }
 
 // fakeQbit implements the three qBittorrent endpoints reconcile touches.
+// torrents maps hash -> current tags; addTags mutates it, like the real one.
 type fakeQbit struct {
-	torrents map[string]bool     // hashes present in the client
-	tagged   map[string][]string // hash -> tags applied
+	torrents map[string][]string
+	calls    int
 	logins   int
 }
 
-func (f *fakeQbit) server() *httptest.Server {
+func (f *fakeQbit) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v2/auth/login", func(rw http.ResponseWriter, r *http.Request) {
 		f.logins++
@@ -273,60 +214,71 @@ func (f *fakeQbit) server() *httptest.Server {
 	mux.HandleFunc("/api/v2/torrents/info", func(rw http.ResponseWriter, r *http.Request) {
 		var out []map[string]string
 		for _, h := range strings.Split(r.URL.Query().Get("hashes"), "|") {
-			if f.torrents[h] {
-				out = append(out, map[string]string{"hash": h})
+			if tags, ok := f.torrents[h]; ok {
+				out = append(out, map[string]string{"hash": h, "tags": strings.Join(tags, ", ")})
 			}
 		}
 		json.NewEncoder(rw).Encode(out)
 	})
 	mux.HandleFunc("/api/v2/torrents/addTags", func(rw http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
+		f.calls++
 		h := r.Form.Get("hashes")
-		f.tagged[h] = append(f.tagged[h], strings.Split(r.Form.Get("tags"), ",")...)
+		f.torrents[h] = append(f.torrents[h], strings.Split(r.Form.Get("tags"), ",")...)
 	})
-	return httptest.NewServer(mux)
+	return mux
+}
+
+func candidates(cs ...candidate) map[string]candidate {
+	out := map[string]candidate{}
+	for _, c := range cs {
+		out[c.Hash] = c
+	}
+	return out
 }
 
 func TestReconcile(t *testing.T) {
-	fake := &fakeQbit{torrents: map[string]bool{"inqbit": true}, tagged: map[string][]string{}}
-	srv := fake.server()
+	fake := &fakeQbit{torrents: map[string][]string{
+		"bare":    {},           // present, untagged -> gets both tags
+		"partial": {"fl"},       // present, half tagged -> gets only du
+		"done":    {"du", "fl"}, // present, converged -> untouched
+	}}
+	srv := httptest.NewServer(fake.handler())
 	defer srv.Close()
 
-	state := newTestState(t)
-	now := time.Now()
-	state.add(Entry{Hash: "inqbit", Tags: []string{"du", "fl"}, Added: now})               // present -> tag + drop
-	state.add(Entry{Hash: "pending", Tags: []string{"du"}, Added: now})                    // absent, fresh -> keep
-	state.add(Entry{Hash: "stale", Tags: []string{"fl"}, Added: now.Add(-72 * time.Hour)}) // absent, old -> expire
-
+	want := candidates(
+		candidate{Hash: "bare", Tags: []string{"du", "fl"}},
+		candidate{Hash: "partial", Tags: []string{"du", "fl"}},
+		candidate{Hash: "done", Tags: []string{"du", "fl"}},
+		candidate{Hash: "absent", Tags: []string{"du"}}, // not in qBit -> skipped
+	)
 	q := newQbit(srv.URL, "admin", "pw")
-	reconcile(q, state, 48*time.Hour)
+	reconcile(q, want)
 
-	if got := strings.Join(fake.tagged["inqbit"], ","); got != "du,fl" {
-		t.Errorf("tags applied = %q, want du,fl", got)
+	if got := strings.Join(fake.torrents["bare"], ","); got != "du,fl" {
+		t.Errorf("bare = %q, want du,fl", got)
 	}
-	if len(fake.tagged) != 1 {
-		t.Errorf("tagged %d torrents, want 1: %v", len(fake.tagged), fake.tagged)
+	if got := strings.Join(fake.torrents["partial"], ","); got != "fl,du" {
+		t.Errorf("partial = %q, want fl,du (only the missing tag added)", got)
+	}
+	if fake.calls != 2 {
+		t.Errorf("addTags called %d times, want 2 (done and absent untouched)", fake.calls)
+	}
+	if _, ok := fake.torrents["absent"]; ok {
+		t.Error("absent torrent materialized")
 	}
 
-	remaining := state.snapshot()
-	if len(remaining) != 1 || remaining[0].Hash != "pending" {
-		t.Errorf("remaining = %+v, want only pending", remaining)
-	}
-
-	// second pass: nothing new should happen
-	reconcile(q, state, 48*time.Hour)
-	if got := len(fake.tagged["inqbit"]); got != 2 { // "du","fl" from the single call
-		t.Errorf("inqbit tag calls changed unexpectedly: %v", fake.tagged["inqbit"])
-	}
-	if len(state.snapshot()) != 1 {
-		t.Error("pending entry lost on idle pass")
+	// second pass: everything converged, no calls at all
+	reconcile(q, want)
+	if fake.calls != 2 {
+		t.Errorf("idle pass made %d extra addTags calls", fake.calls-2)
 	}
 }
 
 func TestReconcileRelogin(t *testing.T) {
-	fake := &fakeQbit{torrents: map[string]bool{"aaa": true}, tagged: map[string][]string{}}
-	mux := http.NewServeMux()
+	fake := &fakeQbit{torrents: map[string][]string{"aaa": {}}}
 	authed := false
+	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v2/auth/login", func(rw http.ResponseWriter, r *http.Request) {
 		fake.logins++
 		authed = true
@@ -337,29 +289,24 @@ func TestReconcileRelogin(t *testing.T) {
 			rw.WriteHeader(http.StatusForbidden)
 			return
 		}
-		json.NewEncoder(rw).Encode([]map[string]string{{"hash": "aaa"}})
+		json.NewEncoder(rw).Encode([]map[string]string{{"hash": "aaa", "tags": ""}})
 	})
 	mux.HandleFunc("/api/v2/torrents/addTags", func(rw http.ResponseWriter, r *http.Request) {
 		r.ParseForm()
-		fake.tagged[r.Form.Get("hashes")] = strings.Split(r.Form.Get("tags"), ",")
+		fake.torrents[r.Form.Get("hashes")] = strings.Split(r.Form.Get("tags"), ",")
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()
 
-	state := newTestState(t)
-	state.add(Entry{Hash: "aaa", Tags: []string{"du"}, Added: time.Now()})
-
 	q := newQbit(srv.URL, "admin", "pw")
-	reconcile(q, state, 48*time.Hour) // first info call 403s -> relogin -> retry succeeds
+	// first info call 403s -> relogin -> retry succeeds
+	reconcile(q, candidates(candidate{Hash: "aaa", Tags: []string{"du"}}))
 
 	if fake.logins != 1 {
 		t.Errorf("logins = %d, want 1", fake.logins)
 	}
-	if strings.Join(fake.tagged["aaa"], ",") != "du" {
-		t.Errorf("tags = %v, want [du]", fake.tagged["aaa"])
-	}
-	if len(state.snapshot()) != 0 {
-		t.Error("entry not removed after successful tag")
+	if got := strings.Join(fake.torrents["aaa"], ","); got != "du" {
+		t.Errorf("tags = %q, want du", got)
 	}
 }
 

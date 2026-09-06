@@ -28,17 +28,17 @@ type history struct {
 
 type state struct {
 	mu       sync.Mutex
-	torrents map[string]bool
-	tagged   map[string][]string
+	torrents map[string][]string // hash -> current tags
+	tagged   map[string][]string // hash -> tags ever applied via addTags
 	grabs    []history
 }
 
 func main() {
-	s := &state{torrents: map[string]bool{}, tagged: map[string][]string{}}
+	s := &state{torrents: map[string][]string{}, tagged: map[string][]string{}}
 	// TORRENTS seeds hashes that exist in "qBittorrent" from the start.
 	for _, h := range strings.Split(os.Getenv("TORRENTS"), ",") {
 		if h = strings.TrimSpace(h); h != "" {
-			s.torrents[h] = true
+			s.torrents[h] = []string{}
 		}
 	}
 
@@ -51,8 +51,8 @@ func main() {
 		defer s.mu.Unlock()
 		out := []map[string]string{}
 		for _, h := range strings.Split(r.URL.Query().Get("hashes"), "|") {
-			if s.torrents[h] {
-				out = append(out, map[string]string{"hash": h})
+			if tags, ok := s.torrents[h]; ok {
+				out = append(out, map[string]string{"hash": h, "tags": strings.Join(tags, ", ")})
 			}
 		}
 		json.NewEncoder(rw).Encode(out)
@@ -64,6 +64,7 @@ func main() {
 		h := r.Form.Get("hashes")
 		for _, tag := range strings.Split(r.Form.Get("tags"), ",") {
 			s.tagged[h] = append(s.tagged[h], tag)
+			s.torrents[h] = append(s.torrents[h], tag)
 		}
 	})
 
@@ -107,7 +108,9 @@ func main() {
 	http.HandleFunc("/testonly/add", func(rw http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		s.torrents[r.URL.Query().Get("hash")] = true
+		if h := r.URL.Query().Get("hash"); s.torrents[h] == nil {
+			s.torrents[h] = []string{}
+		}
 	})
 	// Everything tagged so far, for assertions.
 	http.HandleFunc("/testonly/tagged", func(rw http.ResponseWriter, r *http.Request) {

@@ -14,7 +14,7 @@ import (
 )
 
 // Scenario is one test's world: a mock (qBittorrent + arr in one) and a
-// tagbrr polling it, joined by the suite network. The mock's test-only
+// stateless tagbrr polling it, joined by the suite network. The mock's test-only
 // endpoints are published on a host loopback port so the test can arrange
 // grabs and read back tags.
 type Scenario struct {
@@ -42,10 +42,9 @@ func Up(t *testing.T, rules string, seeded ...string) *Scenario {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(dir, "data"), 0o777); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	os.Chmod(filepath.Join(dir, "data"), 0o777) // tagbrr runs as nobody
 
 	s := &Scenario{t: t, mock: "tagbrr-it-mock", subject: "tagbrr-it-subject"}
 	if err := os.WriteFile(filepath.Join(dir, "tagbrr.yaml"), []byte(rules), 0o644); err != nil {
@@ -73,9 +72,8 @@ func Up(t *testing.T, rules string, seeded ...string) *Scenario {
 		"-e", "TAGBRR_ARR_MOCK_URL=http://"+s.mock+":8080",
 		"-e", "TAGBRR_ARR_MOCK_KEY=itkey",
 		"-e", "TAGBRR_INTERVAL=1s",
-		"-e", "TAGBRR_BACKFILL=1h",
+		"-e", "TAGBRR_WINDOW=1h",
 		"-v", filepath.Join(dir, "tagbrr.yaml")+":/config/tagbrr.yaml:ro",
-		"-v", filepath.Join(dir, "data")+":/data",
 		subjectImage); err != nil {
 		t.Fatal(err)
 	}
