@@ -48,8 +48,7 @@ func Up(t *testing.T, rules string, seeded ...string) *Scenario {
 	os.Chmod(filepath.Join(dir, "data"), 0o777) // tagbrr runs as nobody
 
 	s := &Scenario{t: t, mock: "tagbrr-it-mock", subject: "tagbrr-it-subject"}
-	cfg := "arrs:\n  mock: http://" + s.mock + ":8080\n" + rules
-	if err := os.WriteFile(filepath.Join(dir, "tagbrr.yaml"), []byte(cfg), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "tagbrr.yaml"), []byte(rules), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
@@ -71,6 +70,7 @@ func Up(t *testing.T, rules string, seeded ...string) *Scenario {
 		"--label", label+"=1", "--network", network,
 		"-e", "TAGBRR_QBIT_URL=http://"+s.mock+":8080",
 		"-e", "TAGBRR_QBIT_PASS=irrelevant",
+		"-e", "TAGBRR_ARR_MOCK_URL=http://"+s.mock+":8080",
 		"-e", "TAGBRR_ARR_MOCK_KEY=itkey",
 		"-e", "TAGBRR_INTERVAL=1s",
 		"-e", "TAGBRR_BACKFILL=1h",

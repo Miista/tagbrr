@@ -17,29 +17,15 @@ var testRules = []Rule{
 }
 
 const testConfig = `
-arrs:
-  radarr: http://radarr:7878/
 rules:
   doubleupload: du
   freeleech, halfleech: fl
 `
 
-func testEnv(vars map[string]string) func(string) string {
-	return func(k string) string { return vars[k] }
-}
-
 func TestParseConfig(t *testing.T) {
-	env := testEnv(map[string]string{"TAGBRR_ARR_RADARR_KEY": "secret"})
-
-	cfg, err := parseConfig([]byte(testConfig), env)
+	cfg, err := parseConfig([]byte(testConfig))
 	if err != nil {
 		t.Fatal(err)
-	}
-	if len(cfg.Arrs) != 1 || cfg.Arrs[0].Name != "radarr" || cfg.Arrs[0].Key != "secret" {
-		t.Fatalf("arrs = %+v", cfg.Arrs)
-	}
-	if cfg.Arrs[0].URL != "http://radarr:7878" {
-		t.Errorf("trailing slash kept: %q", cfg.Arrs[0].URL)
 	}
 	if len(cfg.Rules) != 2 {
 		t.Fatalf("got %d rules, want 2", len(cfg.Rules))
@@ -50,27 +36,49 @@ func TestParseConfig(t *testing.T) {
 		}
 	}
 
-	// missing API key env is a config error
-	if _, err := parseConfig([]byte(testConfig), testEnv(nil)); err == nil {
-		t.Error("missing TAGBRR_ARR_RADARR_KEY accepted")
-	}
-	// no arrs at all
-	if _, err := parseConfig([]byte("rules:\n  freeleech: fl\n"), env); err == nil {
-		t.Error("config without arrs accepted")
-	}
 	// no rules at all
-	if _, err := parseConfig([]byte("arrs:\n  radarr: http://r\n"), env); err == nil {
+	if _, err := parseConfig([]byte("{}")); err == nil {
 		t.Error("config without rules accepted")
 	}
 	// empty flag list / empty tag / invalid yaml
-	if _, err := parseConfig([]byte("arrs:\n  radarr: http://r\nrules:\n  \" , \": x\n"), env); err == nil {
+	if _, err := parseConfig([]byte("rules:\n  \" , \": x\n")); err == nil {
 		t.Error("empty flag list accepted")
 	}
-	if _, err := parseConfig([]byte("arrs:\n  radarr: http://r\nrules:\n  freeleech: \"\"\n"), env); err == nil {
+	if _, err := parseConfig([]byte("rules:\n  freeleech: \"\"\n")); err == nil {
 		t.Error("empty tag accepted")
 	}
-	if _, err := parseConfig([]byte(": not yaml: ["), env); err == nil {
+	if _, err := parseConfig([]byte(": not yaml: [")); err == nil {
 		t.Error("invalid yaml accepted")
+	}
+}
+
+func TestArrsFromEnv(t *testing.T) {
+	arrs, err := arrsFromEnv([]string{
+		"TAGBRR_ARR_RADARR_URL=http://radarr:7878/",
+		"TAGBRR_ARR_RADARR_KEY=secret",
+		"PATH=/usr/bin", // unrelated vars ignored
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(arrs) != 1 || arrs[0].Name != "radarr" || arrs[0].Key != "secret" {
+		t.Fatalf("arrs = %+v", arrs)
+	}
+	if arrs[0].URL != "http://radarr:7878" {
+		t.Errorf("trailing slash kept: %q", arrs[0].URL)
+	}
+
+	// URL without a matching key is an error
+	if _, err := arrsFromEnv([]string{"TAGBRR_ARR_RADARR_URL=http://r"}); err == nil {
+		t.Error("missing TAGBRR_ARR_RADARR_KEY accepted")
+	}
+	// no arrs at all is an error
+	if _, err := arrsFromEnv([]string{"PATH=/usr/bin"}); err == nil {
+		t.Error("no arrs accepted")
+	}
+	// empty URL is an error
+	if _, err := arrsFromEnv([]string{"TAGBRR_ARR_RADARR_URL="}); err == nil {
+		t.Error("empty URL accepted")
 	}
 }
 

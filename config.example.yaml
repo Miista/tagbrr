@@ -1,15 +1,11 @@
-# tagbrr config.
+# tagbrr rules: "flagA,flagB,..." -> tag
+# Each key is a comma-separated list of flag patterns, matched
+# case-insensitively as substrings of the grab's indexer flags (so
+# "doubleupload" also catches "G_DoubleUpload"). Any pattern matching
+# applies the tag.
 #
-# arrs: instances to poll for grab history. API keys come from the
-# environment as TAGBRR_ARR_<NAME>_KEY (uppercased name).
-#
-# rules: "flagA,flagB,..." -> tag. Each key is a comma-separated list of
-# flag patterns, matched case-insensitively as substrings of the grab's
-# indexer flags (so "doubleupload" also catches "G_DoubleUpload"). Any
-# pattern matching applies the tag.
-arrs:
-  radarr: http://radarr:7878
-  sonarr: http://sonarr:8989
+# The arrs to poll are declared in the environment, not here:
+# TAGBRR_ARR_<NAME>_URL + TAGBRR_ARR_<NAME>_KEY per instance.
 rules:
   doubleupload: du
   freeleech,halfleech: fl

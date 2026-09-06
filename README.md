@@ -10,21 +10,19 @@ configured in the arrs: tagbrr only reads.
 
 ## Config (`/config/tagbrr.yaml`)
 
-`arrs` names each instance to poll. `rules` keys are comma-separated flag
-patterns; any of them matching (case-insensitive substring against the
-grab's indexer flags) applies the tag:
+Rules only. Keys are comma-separated flag patterns; any of them matching
+(case-insensitive substring against the grab's indexer flags) applies the
+tag:
 
 ```yaml
-arrs:
-  radarr: http://radarr:7878
-  sonarr: http://sonarr:8989
 rules:
   doubleupload: du
   freeleech,halfleech: fl
 ```
 
-API keys stay out of the file: each arr reads
-`TAGBRR_ARR_<NAME>_KEY` (uppercased name) from the environment.
+The arrs to poll are declared entirely in the environment: a
+`TAGBRR_ARR_<NAME>_URL` per instance, each with a matching
+`TAGBRR_ARR_<NAME>_KEY`.
 
 ## Environment
 
@@ -33,7 +31,8 @@ API keys stay out of the file: each arr reads
 | `TAGBRR_QBIT_URL` | — (required) | e.g. `http://qbittorrent:8080` |
 | `TAGBRR_QBIT_USER` | `admin` | |
 | `TAGBRR_QBIT_PASS` | — (required) | |
-| `TAGBRR_ARR_<NAME>_KEY` | — (required per arr) | API key for the arr named `<NAME>` in the config |
+| `TAGBRR_ARR_<NAME>_URL` | — (required, per arr) | e.g. `TAGBRR_ARR_RADARR_URL=http://radarr:7878` |
+| `TAGBRR_ARR_<NAME>_KEY` | — (required, per arr) | API key matching the `_URL` of the same name |
 | `TAGBRR_INTERVAL` | `2m` | poll + reconcile interval |
 | `TAGBRR_BACKFILL` | `48h` | how far back the first-ever poll looks; set it long to retroactively tag old grabs still in qBittorrent |
 | `TAGBRR_TTL` | `48h` | give up on a grabbed torrent that never appears in qBittorrent after this long; keep ≤ the add-to-removal lifetime of your torrents, longer buys nothing |
@@ -54,7 +53,9 @@ tagbrr:
   environment:
     TAGBRR_QBIT_URL: http://qbittorrent:8080
     TAGBRR_QBIT_PASS: ${QBIT_PASS}
+    TAGBRR_ARR_RADARR_URL: http://radarr:7878
     TAGBRR_ARR_RADARR_KEY: ${RADARR_API_KEY}
+    TAGBRR_ARR_SONARR_URL: http://sonarr:8989
     TAGBRR_ARR_SONARR_KEY: ${SONARR_API_KEY}
     TZ: Europe/Copenhagen
   volumes:

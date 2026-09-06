@@ -49,42 +49,60 @@ type Rule struct {
 	Tag   string
 }
 
-// Arr is one Sonarr/Radarr instance to poll. The API key comes from the
-// environment (TAGBRR_ARR_<NAME>_KEY), not the config file.
+// Arr is one Sonarr/Radarr instance to poll, declared entirely in the
+// environment: TAGBRR_ARR_<NAME>_URL and TAGBRR_ARR_<NAME>_KEY.
 type Arr struct {
 	Name string
 	URL  string
 	Key  string
 }
 
-// Config is the rules file: an `arrs` map (name -> base URL) and a flat
-// `rules` map ("flagA,flagB" -> tag). Any listed flag matching
-// (case-insensitive substring) applies the tag.
+// arrsFromEnv discovers the arrs to poll from TAGBRR_ARR_<NAME>_URL
+// variables; each needs a matching _KEY. The name is kept lowercase for
+// logs and state.
+func arrsFromEnv(environ []string) ([]Arr, error) {
+	vars := map[string]string{}
+	for _, kv := range environ {
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			vars[k] = v
+		}
+	}
+	var arrs []Arr
+	for k, v := range vars {
+		if !strings.HasPrefix(k, "TAGBRR_ARR_") || !strings.HasSuffix(k, "_URL") {
+			continue
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(k, "TAGBRR_ARR_"), "_URL")
+		if name == "" || v == "" {
+			return nil, fmt.Errorf("%s: empty arr name or URL", k)
+		}
+		key := vars["TAGBRR_ARR_"+name+"_KEY"]
+		if key == "" {
+			return nil, fmt.Errorf("arr %q: TAGBRR_ARR_%s_KEY is not set", strings.ToLower(name), name)
+		}
+		arrs = append(arrs, Arr{Name: strings.ToLower(name), URL: strings.TrimRight(v, "/"), Key: key})
+	}
+	if len(arrs) == 0 {
+		return nil, fmt.Errorf("no arrs configured: set TAGBRR_ARR_<NAME>_URL and _KEY")
+	}
+	return arrs, nil
+}
+
+// Config is the rules file: a flat `rules` map ("flagA,flagB" -> tag). Any
+// listed flag matching (case-insensitive substring) applies the tag.
 type Config struct {
 	Arrs  []Arr
 	Rules []Rule
 }
 
-func parseConfig(b []byte, getenv func(string) string) (Config, error) {
+func parseConfig(b []byte) (Config, error) {
 	var raw struct {
-		Arrs  map[string]string `yaml:"arrs"`
 		Rules map[string]string `yaml:"rules"`
 	}
 	if err := yaml.Unmarshal(b, &raw); err != nil {
 		return Config{}, err
 	}
 	var cfg Config
-	for name, base := range raw.Arrs {
-		envKey := "TAGBRR_ARR_" + strings.ToUpper(name) + "_KEY"
-		key := getenv(envKey)
-		if key == "" {
-			return Config{}, fmt.Errorf("arr %q: %s is not set", name, envKey)
-		}
-		cfg.Arrs = append(cfg.Arrs, Arr{Name: name, URL: strings.TrimRight(base, "/"), Key: key})
-	}
-	if len(cfg.Arrs) == 0 {
-		return Config{}, fmt.Errorf("the config file defines no arrs")
-	}
 	for flags, tag := range raw.Rules {
 		var pats []string
 		for _, f := range strings.Split(flags, ",") {
@@ -477,9 +495,12 @@ func main() {
 	if err != nil {
 		logger.Fatal().Msgf("could not read the config file: %v", err)
 	}
-	cfg, err := parseConfig(cfgBytes, os.Getenv)
+	cfg, err := parseConfig(cfgBytes)
 	if err != nil {
 		logger.Fatal().Msgf("could not parse the config file: %v", err)
+	}
+	if cfg.Arrs, err = arrsFromEnv(os.Environ()); err != nil {
+		logger.Fatal().Msgf("%v", err)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dataPath), 0o755); err != nil {
