@@ -26,6 +26,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+// The container owns these paths and its internal port; they are not
+// configuration. Mount the rules file at configPath and a volume at the
+// data directory.
+const (
+	listen     = ":9171"
+	configPath = "/config/tagbrr.yaml"
+	dataPath   = "/data/watchlist.json"
+)
+
 // version is injected by goreleaser via -ldflags "-X main.version=...".
 var version = "dev"
 
@@ -323,18 +332,15 @@ func healthcheck(listen string) int {
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "-healthcheck" {
-		os.Exit(healthcheck(envOr("TAGBRR_LISTEN", ":9171")))
+		os.Exit(healthcheck(listen))
 	}
 	logger = newLogger(envOr("LOG_LEVEL", "info"))
 	var (
-		qbtURL     = os.Getenv("TAGBRR_QBIT_URL")
-		qbtUser    = envOr("TAGBRR_QBIT_USER", "admin")
-		qbtPass    = os.Getenv("TAGBRR_QBIT_PASS")
-		listen     = envOr("TAGBRR_LISTEN", ":9171")
-		interval   = envDuration("TAGBRR_INTERVAL", 2*time.Minute)
-		ttl        = envDuration("TAGBRR_TTL", 48*time.Hour)
-		configPath = envOr("TAGBRR_CONFIG", "/config/tagbrr.yaml")
-		dataPath   = envOr("TAGBRR_DATA", "/data/watchlist.json")
+		qbtURL   = os.Getenv("TAGBRR_QBIT_URL")
+		qbtUser  = envOr("TAGBRR_QBIT_USER", "admin")
+		qbtPass  = os.Getenv("TAGBRR_QBIT_PASS")
+		interval = envDuration("TAGBRR_INTERVAL", 2*time.Minute)
+		ttl      = envDuration("TAGBRR_TTL", 48*time.Hour)
 	)
 	if qbtURL == "" || qbtPass == "" {
 		logger.Fatal().Msg("TAGBRR_QBIT_URL and TAGBRR_QBIT_PASS are required")

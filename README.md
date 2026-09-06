@@ -5,10 +5,8 @@ Converges arr grab-time indexer flags onto qBittorrent tags.
 Sonarr/Radarr know a release's promo status (freeleech, double upload, …)
 only at grab time, and expose it only in the On Grab webhook — the data
 never reaches the download client and is discarded after grab. tagbrr
-catches that webhook, puts the torrent on a persistent watch list, and a
-reconcile loop tags it in qBittorrent once it appears. Seeding *policy*
-stays downstream — e.g. a qui automation: `tag du + added age < 30d →
-seeding time unlimited`.
+catches that webhook and tags the torrent in qBittorrent, allowing for a
+qui automation.
 
 ## Rules (`/config/tagbrr.yaml`)
 
@@ -23,16 +21,19 @@ rules:
 
 ## Environment
 
-| Var | Default | |
+| Var | Default | Notes |
 |---|---|---|
 | `TAGBRR_QBIT_URL` | — (required) | e.g. `http://qbittorrent:8080` |
 | `TAGBRR_QBIT_USER` | `admin` | |
 | `TAGBRR_QBIT_PASS` | — (required) | |
-| `TAGBRR_LISTEN` | `:9171` | webhook listen address |
 | `TAGBRR_INTERVAL` | `2m` | reconcile interval |
 | `TAGBRR_TTL` | `48h` | drop watch entries that never appear in qBit; keep ≤ the add-to-removal lifetime of your torrents, longer buys nothing |
-| `TAGBRR_CONFIG` | `/config/tagbrr.yaml` | |
-| `TAGBRR_DATA` | `/data/watchlist.json` | |
+| `LOG_LEVEL` | `info` | zerolog level |
+| `TZ` | UTC | timezone for log timestamps |
+
+The rules file lives at `/config/tagbrr.yaml` and state at
+`/data/watchlist.json` inside the container (fixed paths — mount
+accordingly). The webhook listens on `:9171`.
 
 ## Compose
 
