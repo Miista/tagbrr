@@ -3,21 +3,28 @@
 Converges arr grab-time indexer flags onto qBittorrent tags.
 
 Sonarr/Radarr know a release's promo status (freeleech, double upload, …)
-only at grab time, and expose it only in the On Grab webhook — the data
-never reaches the download client and is discarded after grab. tagbrr
-catches that webhook and tags the torrent in qBittorrent, allowing for a
-qui automation.
+at grab time and keep it on the grab event in their history — the data
+never reaches the download client. tagbrr polls that history and tags the
+torrent in qBittorrent, allowing for a qui automation. Nothing is
+configured in the arrs: tagbrr only reads.
 
-## Rules (`/config/tagbrr.yaml`)
+## Config (`/config/tagbrr.yaml`)
 
-Each key is a comma-separated list of flag patterns; any of them matching
-(case-insensitive substring against the grab's `indexerFlags`) applies the tag:
+`arrs` names each instance to poll. `rules` keys are comma-separated flag
+patterns; any of them matching (case-insensitive substring against the
+grab's indexer flags) applies the tag:
 
 ```yaml
+arrs:
+  radarr: http://radarr:7878
+  sonarr: http://sonarr:8989
 rules:
   doubleupload: du
   freeleech,halfleech: fl
 ```
+
+API keys stay out of the file: each arr reads
+`TAGBRR_ARR_<NAME>_KEY` (uppercased name) from the environment.
 
 ## Environment
 
@@ -26,14 +33,16 @@ rules:
 | `TAGBRR_QBIT_URL` | — (required) | e.g. `http://qbittorrent:8080` |
 | `TAGBRR_QBIT_USER` | `admin` | |
 | `TAGBRR_QBIT_PASS` | — (required) | |
-| `TAGBRR_INTERVAL` | `2m` | reconcile interval |
+| `TAGBRR_ARR_<NAME>_KEY` | — (required per arr) | API key for the arr named `<NAME>` in the config |
+| `TAGBRR_INTERVAL` | `2m` | poll + reconcile interval |
+| `TAGBRR_BACKFILL` | `48h` | how far back the first-ever poll looks; set it long to retroactively tag old grabs still in qBittorrent |
 | `TAGBRR_TTL` | `48h` | give up on a grabbed torrent that never appears in qBittorrent after this long; keep ≤ the add-to-removal lifetime of your torrents, longer buys nothing |
 | `LOG_LEVEL` | `info` | zerolog level |
 | `TZ` | UTC | timezone for log timestamps |
 
-The rules file lives at `/config/tagbrr.yaml` and state at
-`/data/watchlist.json` inside the container (fixed paths — mount
-accordingly). The webhook listens on `:9171`.
+The config file lives at `/config/tagbrr.yaml` and state at
+`/data/state.json` inside the container (fixed paths — mount accordingly).
+`:9171` serves `/healthz` only.
 
 ## Compose
 
@@ -45,18 +54,14 @@ tagbrr:
   environment:
     TAGBRR_QBIT_URL: http://qbittorrent:8080
     TAGBRR_QBIT_PASS: ${QBIT_PASS}
+    TAGBRR_ARR_RADARR_KEY: ${RADARR_API_KEY}
+    TAGBRR_ARR_SONARR_KEY: ${SONARR_API_KEY}
     TZ: Europe/Copenhagen
   volumes:
-    - ./tagbrr/tagbrr.yaml:/config/tagbrr.yaml:ro   # rules file (fixed path)
+    - ./tagbrr/tagbrr.yaml:/config/tagbrr.yaml:ro   # config (fixed path)
     - ./tagbrr/data:/data                           # state (fixed path)
-  networks: [media]   # arrs reach the webhook on :9171 over the compose network; nothing published
+  networks: [media]   # polls the arrs and qBittorrent over the compose network; nothing published
 ```
-
-## Arr setup
-
-Sonarr/Radarr → Settings → Connect → **Webhook**:
-URL `http://tagbrr:9171/webhook`, method POST, trigger **On Grab** only.
-The Test button sends `eventType: Test`, which tagbrr acks and ignores.
 
 ## Notes
 
@@ -65,3 +70,5 @@ The Test button sends `eventType: Test`, which tagbrr acks and ignores.
 - The flag snapshot is grab-time only; promos ending later are invisible.
   Time-box downstream instead (qui rule on tag + added age).
 - Failed grabs never appear in qBit; the TTL garbage-collects them.
+- Polls overlap slightly and re-tagging is idempotent, so restarts and
+  downtime lose nothing — history is the durable record.
