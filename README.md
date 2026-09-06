@@ -27,7 +27,7 @@ rules:
 | `TAGBRR_QBIT_USER` | `admin` | |
 | `TAGBRR_QBIT_PASS` | — (required) | |
 | `TAGBRR_INTERVAL` | `2m` | reconcile interval |
-| `TAGBRR_TTL` | `48h` | drop watch entries that never appear in qBit; keep ≤ the add-to-removal lifetime of your torrents, longer buys nothing |
+| `TAGBRR_TTL` | `48h` | give up on a grabbed torrent that never appears in qBittorrent after this long; keep ≤ the add-to-removal lifetime of your torrents, longer buys nothing |
 | `LOG_LEVEL` | `info` | zerolog level |
 | `TZ` | UTC | timezone for log timestamps |
 
@@ -48,8 +48,8 @@ tagbrr:
     TZ: Europe/Copenhagen
   volumes:
     - ./tagbrr/tagbrr.yaml:/config/tagbrr.yaml:ro   # rules file (fixed path)
-    - ./tagbrr/data:/data                           # watch list state (fixed path)
-  networks: [media]   # no published ports; arrs reach it on the compose network
+    - ./tagbrr/data:/data                           # state (fixed path)
+  networks: [media]   # arrs reach the webhook on :9171 over the compose network; nothing published
 ```
 
 ## Arr setup
