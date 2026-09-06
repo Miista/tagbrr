@@ -360,7 +360,7 @@ func envDuration(key string, def time.Duration) time.Duration {
 	if v == "" {
 		return def
 	}
-	d, err := time.ParseDuration(v)
+	d, err := parseDuration(v)
 	if err != nil {
 		logger.Fatal().Msgf("invalid duration in %s: %v", key, err)
 	}

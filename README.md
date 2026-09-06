@@ -34,14 +34,15 @@ The arrs to poll are declared entirely in the environment: a
 | `TAGBRR_ARR_<NAME>_URL` | — (required, per arr) | e.g. `TAGBRR_ARR_RADARR_URL=http://radarr:7878` |
 | `TAGBRR_ARR_<NAME>_KEY` | — (required, per arr) | API key matching the `_URL` of the same name |
 | `TAGBRR_INTERVAL` | `15m` | poll interval; keep it well under your shortest seeding goal so tags land before policy would matter |
-| `TAGBRR_WINDOW` | `720h` | how far back each poll looks; grabs older than this are never (re)considered. Set it long once to retroactively tag old grabs still in qBittorrent |
+| `TAGBRR_WINDOW` | `30d` | how far back each poll looks; grabs older than this are never (re)considered. Set it long once to retroactively tag old grabs still in qBittorrent |
 | `LOG_LEVEL` | `info` | zerolog level |
 | `TZ` | UTC | timezone for log timestamps |
 
 The config file lives at `/config/tagbrr.yaml` inside the container (fixed
 path — mount accordingly). tagbrr is stateless: no volume, no database;
 every pass re-reads the window and tags only what is missing a tag.
-`:9171` serves `/healthz` only.
+`:9171` serves `/healthz` only. Durations accept Go forms plus `d`/`w`
+suffixes (`12h`, `1d`, `2w`).
 
 ## Compose
 
